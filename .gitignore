@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+env/
+venv/
+ENV/
+.venv/
+.env
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model checkpoints (too large for git)
+models/checkpoints/*.pth
+models/checkpoints/*.pt
+models/checkpoints/*.ckpt
+
+# Generated data images
+data/real/*.png
+data/fake/*.png
+data/real/*.jpg
+data/fake/*.jpg
+
+# Results (generated)
+results/*.png
+results/*.json
+
+# Logs
+*.log
+logs/
+wandb/
+mlruns/
+
+# Large model files
+*.pt
+*.pth
+*.ckpt
