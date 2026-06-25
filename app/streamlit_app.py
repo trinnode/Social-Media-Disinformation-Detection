@@ -704,54 +704,17 @@ def main():
         if image_result and text_result:
             st.markdown('<div class="section-label">FUSION BREAKDOWN</div>', unsafe_allow_html=True)
 
-            st.markdown(f"""
-            <div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08);
-                 border-radius:12px; padding:1.5rem;">
-                <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:1rem;">
-                    <div style="text-align:center;">
-                        <div style="font-size:0.65rem; font-weight:700; letter-spacing:1px;
-                             text-transform:uppercase; color:rgba(255,255,255,0.35); margin-bottom:0.5rem;">
-                            IMAGE SCORE
-                        </div>
-                        <div style="font-size:1.5rem; font-weight:800; color:#a78bfa;">
-                            {image_result['fake_probability']:.1%}
-                        </div>
-                        <div style="font-size:0.7rem; color:rgba(255,255,255,0.35);">fake probability</div>
-                    </div>
-                    <div style="text-align:center;">
-                        <div style="font-size:0.65rem; font-weight:700; letter-spacing:1px;
-                             text-transform:uppercase; color:rgba(255,255,255,0.35); margin-bottom:0.5rem;">
-                            TEXT SCORE
-                        </div>
-                        <div style="font-size:1.5rem; font-weight:800; color:#ec4899;">
-                            {text_result['fake_probability']:.1%}
-                        </div>
-                        <div style="font-size:0.7rem; color:rgba(255,255,255,0.35);">fake probability</div>
-                    </div>
-                    <div style="text-align:center;">
-                        <div style="font-size:0.65rem; font-weight:700; letter-spacing:1px;
-                             text-transform:uppercase; color:rgba(255,255,255,0.35); margin-bottom:0.5rem;">
-                            STRATEGY
-                        </div>
-                        <div style="font-size:1.2rem; font-weight:700; color:rgba(255,255,255,0.7);
-                             text-transform:uppercase;">
-                            {fusion_strategy}
-                        </div>
-                        <div style="font-size:0.7rem; color:rgba(255,255,255,0.35);">fusion method</div>
-                    </div>
-                    <div style="text-align:center;">
-                        <div style="font-size:0.65rem; font-weight:700; letter-spacing:1px;
-                             text-transform:uppercase; color:rgba(255,255,255,0.35); margin-bottom:0.5rem;">
-                            FINAL SCORE
-                        </div>
-                        <div style="font-size:1.5rem; font-weight:800; color:#f97316;">
-                            {fake_p:.1%}
-                        </div>
-                        <div style="font-size:0.7rem; color:rgba(255,255,255,0.35);">fake probability</div>
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            fb1, fb2, fb3, fb4 = st.columns(4)
+            with fb1:
+                st.metric("Image Score", f"{image_result['fake_probability']:.1%}", help="Fake probability from image branch")
+            with fb2:
+                st.metric("Text Score", f"{text_result['fake_probability']:.1%}", help="Fake probability from text branch")
+            with fb3:
+                st.metric("Strategy", fusion_strategy.upper())
+            with fb4:
+                st.metric("Final Score", f"{combined['final_fake_probability']:.1%}", help="Combined fake probability")
+
+            st.progress(min(combined["final_fake_probability"], 1.0))
 
             # ── SAVE TO HISTORY ──
             img_summary = f"Image: {image_result['prediction']} ({image_result['fake_probability']:.1%})"
@@ -804,62 +767,42 @@ def main():
         st.markdown('<div class="section-label">ANALYSIS HISTORY</div>', unsafe_allow_html=True)
 
         for i, entry in enumerate(st.session_state.history):
-            verdict_color = {"Fake": "#ef4444", "Real": "#22c55e", "Uncertain": "#facc15"}.get(entry["verdict"], "#9ca3af")
-            bg_color = {"Fake": "rgba(239,68,68,0.04)", "Real": "rgba(34,197,94,0.04)", "Uncertain": "rgba(250,204,21,0.04)"}.get(entry["verdict"], "rgba(255,255,255,0.02)")
-
-            img_bar = ""
-            if entry["image_prob"] is not None:
-                img_bar = f"""
-                <div style="flex:1;">
-                    <div style="font-size:0.65rem; color:rgba(255,255,255,0.35); margin-bottom:0.25rem;">IMAGE</div>
-                    <div class="prob-bar-container" style="margin:0;">
-                        <div class="prob-bar prob-bar-fake" style="width:{entry['image_prob']*100:.1f}%"></div>
-                    </div>
-                    <div style="font-size:0.7rem; color:rgba(255,255,255,0.4); text-align:right;">
-                        {entry['image_prob']:.1%}
-                    </div>
-                </div>
-                """
-
-            txt_bar = ""
-            if entry["text_prob"] is not None:
-                txt_bar = f"""
-                <div style="flex:1;">
-                    <div style="font-size:0.65rem; color:rgba(255,255,255,0.35); margin-bottom:0.25rem;">TEXT</div>
-                    <div class="prob-bar-container" style="margin:0;">
-                        <div class="prob-bar prob-bar-fake" style="width:{entry['text_prob']*100:.1f}%"></div>
-                    </div>
-                    <div style="font-size:0.7rem; color:rgba(255,255,255,0.4); text-align:right;">
-                        {entry['text_prob']:.1%}
-                    </div>
-                </div>
-                """
+            verdict = entry["verdict"]
+            verdict_color = {"Fake": "#ef4444", "Real": "#22c55e", "Uncertain": "#facc15"}.get(verdict, "#9ca3af")
+            verdict_emoji = {"Fake": " ", "Real": " ", "Uncertain": " "}.get(verdict, " ")
 
             st.markdown(f"""
-            <div class="history-card" style="background:{bg_color}; border-left:3px solid {verdict_color};">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <div>
-                        <div class="history-time">{entry['time']}</div>
-                        <div class="history-verdict" style="color:{verdict_color};">
-                            #{i+1} — {entry['verdict']}
-                        </div>
-                    </div>
-                    <div style="text-align:right;">
-                        <div style="font-size:0.65rem; color:rgba(255,255,255,0.3);">FINAL SCORE</div>
-                        <div style="font-size:1.2rem; font-weight:700; color:{verdict_color};">
-                            {entry['final_prob']:.1%}
-                        </div>
-                    </div>
+            <div style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.06);
+                 border-radius:10px; padding:1rem 1.25rem; margin-bottom:0.75rem;
+                 border-left:4px solid {verdict_color};">
+                <div style="color:rgba(255,255,255,0.3); font-size:0.7rem; margin-bottom:0.25rem;">{entry['time']}</div>
+                <div style="color:{verdict_color}; font-size:1rem; font-weight:700;">
+                    {verdict_emoji} #{i+1} — {verdict}
                 </div>
-                <div style="display:flex; gap:1rem; margin-top:0.75rem;">
-                    {img_bar}
-                    {txt_bar}
-                </div>
-                <div class="history-detail" style="margin-top:0.5rem;">
-                    {entry['text_preview']}
+                <div style="color:rgba(255,255,255,0.4); font-size:0.8rem; margin-top:0.25rem;">
+                    {entry['text_preview'][:60]}{'...' if len(entry.get('text_preview','')) > 60 else ''}
                 </div>
             </div>
             """, unsafe_allow_html=True)
+
+            hcols = st.columns(4)
+            with hcols[0]:
+                if entry["image_prob"] is not None:
+                    st.metric("Image", f"{entry['image_prob']:.1%}", help="Fake probability from image branch")
+                else:
+                    st.metric("Image", "N/A")
+            with hcols[1]:
+                if entry["text_prob"] is not None:
+                    st.metric("Text", f"{entry['text_prob']:.1%}", help="Fake probability from text branch")
+                else:
+                    st.metric("Text", "N/A")
+            with hcols[2]:
+                st.metric("Strategy", entry.get("strategy", "N/A"))
+            with hcols[3]:
+                st.metric("Final", f"{entry['final_prob']:.1%}", help="Combined fake probability")
+
+            st.progress(min(entry["final_prob"], 1.0))
+            st.markdown("")
 
     # ── FOOTER ──
     st.markdown("""
