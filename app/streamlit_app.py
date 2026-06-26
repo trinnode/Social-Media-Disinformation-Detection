@@ -57,6 +57,11 @@ def calibrate(logits, temperature=TEMPERATURE):
 
 def predict_image(image: Image.Image, model, device):
     from torchvision import transforms
+    import time
+
+    logs = []
+    logs.append(("STEP 1: Input Received", f"Image mode: {image.mode}, Size: {image.size[0]}x{image.size[1]} pixels"))
+    logs.append(("STEP 1: Input Received", f"Total pixels: {image.size[0] * image.size[1]:,}"))
 
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
@@ -65,15 +70,42 @@ def predict_image(image: Image.Image, model, device):
     ])
 
     if image.mode != "RGB":
+        logs.append(("STEP 2: Mode Conversion", f"Converted from {image.mode} to RGB"))
         image = image.convert("RGB")
+    else:
+        logs.append(("STEP 2: Mode Conversion", "Already RGB, no conversion needed"))
 
+    logs.append(("STEP 3: Error Level Analysis", "Recompressing image at JPEG quality = 95..."))
+    t0 = time.time()
     ela_image = compute_ela(image)
+    ela_time = time.time() - t0
+
+    ela_array = np.array(ela_image, dtype=np.float64)
+    ela_mean = float(ela_array.mean())
+    ela_std = float(ela_array.std())
+    ela_max = float(ela_array.max())
+    logs.append(("STEP 3: Error Level Analysis", f"ELA computed in {ela_time*1000:.1f}ms"))
+    logs.append(("STEP 3: ELA Statistics", f"Mean error: {ela_mean:.2f} | Std dev: {ela_std:.2f} | Max error: {ela_max:.2f}"))
+    logs.append(("STEP 3: ELA Interpretation", f"Lower mean ({ela_mean:.1f}) suggests consistent compression = likely authentic" if ela_mean < 15 else f"Higher mean ({ela_mean:.1f}) suggests compression anomalies = possible manipulation"))
+
+    logs.append(("STEP 4: Image Transform", "Resizing to 224x224, converting to tensor, normalising with ImageNet stats"))
+    logs.append(("STEP 4: Normalisation", "Mean = [0.485, 0.456, 0.406], Std = [0.229, 0.224, 0.225]"))
     orig_tensor = transform(image).unsqueeze(0).to(device)
     ela_tensor = transform(ela_image).unsqueeze(0).to(device)
+    logs.append(("STEP 4: Tensor Shape", f"Original: {list(orig_tensor.shape)} | ELA: {list(ela_tensor.shape)}"))
 
+    logs.append(("STEP 5: ResNet-18 Forward Pass", "Running dual-backbone inference (original + ELA branches)..."))
+    t0 = time.time()
     with torch.no_grad():
         logits = model(orig_tensor, ela_tensor)
         probs = calibrate(logits)
+    inf_time = time.time() - t0
+
+    logit_real = float(logits[0][0])
+    logit_fake = float(logits[0][1])
+    logs.append(("STEP 5: Raw Logits", f"Logit[Real] = {logit_real:.4f} | Logit[Fake] = {logit_fake:.4f}"))
+    logs.append(("STEP 5: Softmax", f"After softmax: P(Real) = {float(probs[0][0]):.4f} | P(Fake) = {float(probs[0][1]):.4f}"))
+    logs.append(("STEP 5: Decision Threshold", f"Threshold: >= {CONFIDENCE_THRESHOLD} for confident, else Uncertain"))
 
     fake_prob = float(probs[0][1])
     real_prob = float(probs[0][0])
@@ -84,6 +116,9 @@ def predict_image(image: Image.Image, model, device):
         prediction, confidence = "Real", real_prob
     else:
         prediction, confidence = "Uncertain", max(fake_prob, real_prob)
+
+    logs.append(("STEP 5: Classification", f"Fake ({fake_prob:.4f}) {'>' if fake_prob > real_prob else '<'} Real ({real_prob:.4f})"))
+    logs.append(("STEP 6: Final Verdict", f"{prediction} with confidence {confidence:.1%} | Inference time: {inf_time*1000:.1f}ms"))
 
     return {
         "prediction": prediction,
@@ -91,11 +126,26 @@ def predict_image(image: Image.Image, model, device):
         "fake_probability": fake_prob,
         "real_probability": real_prob,
         "ela_image": ela_image,
+        "logs": logs,
+        "input_size": f"{orig_tensor.shape}",
+        "inference_time_ms": inf_time * 1000,
     }
 
 
 def predict_text(text: str, model, tokenizer, device):
+    import time
+
+    logs = []
+    logs.append(("STEP 1: Input Received", f"Length: {len(text)} characters, {len(text.split())} words"))
+    logs.append(("STEP 1: Raw Text", text[:120] + ("..." if len(text) > 120 else "")))
+
     cleaned = clean_text(text)
+    logs.append(("STEP 2: Text Cleaning", "Removed URLs, @mentions, #hashtags, special characters, normalised whitespace"))
+    logs.append(("STEP 2: Cleaned Text", cleaned[:120] + ("..." if len(cleaned) > 120 else "")))
+    logs.append(("STEP 2: Cleaning Stats", f"Before: {len(text)} chars | After: {len(cleaned)} chars | Removed: {len(text) - len(cleaned)} chars"))
+
+    logs.append(("STEP 3: Tokenisation", f"Tokenizer: DistilBERT WordPiece | Max length: {config.text.max_length} tokens"))
+    t0 = time.time()
     encoding = tokenizer(
         cleaned,
         max_length=config.text.max_length,
@@ -103,13 +153,27 @@ def predict_text(text: str, model, tokenizer, device):
         truncation=True,
         return_tensors="pt",
     )
+    tok_time = time.time() - t0
 
     input_ids = encoding["input_ids"].to(device)
     attention_mask = encoding["attention_mask"].to(device)
+    actual_tokens = int(attention_mask.sum().item())
+    logs.append(("STEP 3: Tokenisation", f"Tokenised in {tok_time*1000:.1f}ms"))
+    logs.append(("STEP 3: Token Stats", f"Total tokens: {input_ids.shape[1]} | Actual tokens: {actual_tokens} | Padding: {input_ids.shape[1] - actual_tokens} tokens"))
+    logs.append(("STEP 3: Sample Tokens", f"First 10 token IDs: {input_ids[0][:10].tolist()}"))
 
+    logs.append(("STEP 4: DistilBERT Forward Pass", "Running 6-layer transformer encoder with 12 attention heads..."))
+    t0 = time.time()
     with torch.no_grad():
         logits = model(input_ids, attention_mask)
         probs = calibrate(logits)
+    inf_time = time.time() - t0
+
+    logit_real = float(logits[0][0])
+    logit_fake = float(logits[0][1])
+    logs.append(("STEP 4: Raw Logits", f"Logit[Real] = {logit_real:.4f} | Logit[Fake] = {logit_fake:.4f}"))
+    logs.append(("STEP 4: Softmax", f"After softmax: P(Real) = {float(probs[0][0]):.4f} | P(Fake) = {float(probs[0][1]):.4f}"))
+    logs.append(("STEP 4: Decision Threshold", f"Threshold: >= {CONFIDENCE_THRESHOLD} for confident, else Uncertain"))
 
     fake_prob = float(probs[0][1])
     real_prob = float(probs[0][0])
@@ -121,18 +185,35 @@ def predict_text(text: str, model, tokenizer, device):
     else:
         prediction, confidence = "Uncertain", max(fake_prob, real_prob)
 
+    logs.append(("STEP 4: Classification", f"Fake ({fake_prob:.4f}) {'>' if fake_prob > real_prob else '<'} Real ({real_prob:.4f})"))
+    logs.append(("STEP 5: Final Verdict", f"{prediction} with confidence {confidence:.1%} | Inference time: {inf_time*1000:.1f}ms"))
+
     return {
         "prediction": prediction,
         "confidence": confidence,
         "fake_probability": fake_prob,
         "real_probability": real_prob,
         "cleaned_text": cleaned,
+        "logs": logs,
+        "token_count": actual_tokens,
+        "inference_time_ms": inf_time * 1000,
     }
 
 
 def combine_predictions(image_result, text_result, strategy="average"):
     img_prob = image_result["fake_probability"]
     txt_prob = text_result["fake_probability"]
+
+    logs = []
+    logs.append(("STEP 1: Branch Outputs", f"Image P(Fake) = {img_prob:.4f} | Text P(Fake) = {txt_prob:.4f}"))
+    logs.append(("STEP 1: Disagreement", f"Absolute difference = |{img_prob:.4f} - {txt_prob:.4f}| = {abs(img_prob - txt_prob):.4f}"))
+
+    strategy_formulas = {
+        "average": f"({img_prob:.4f} + {txt_prob:.4f}) / 2 = {((img_prob + txt_prob) / 2):.4f}",
+        "weighted": f"0.4 * {img_prob:.4f} + 0.6 * {txt_prob:.4f} = {(0.4 * img_prob + 0.6 * txt_prob):.4f}",
+        "max": f"max({img_prob:.4f}, {txt_prob:.4f}) = {max(img_prob, txt_prob):.4f}",
+        "min": f"min({img_prob:.4f}, {txt_prob:.4f}) = {min(img_prob, txt_prob):.4f}",
+    }
 
     if strategy == "average":
         final = (img_prob + txt_prob) / 2
@@ -145,12 +226,23 @@ def combine_predictions(image_result, text_result, strategy="average"):
     else:
         final = (img_prob + txt_prob) / 2
 
+    logs.append(("STEP 2: Fusion Strategy", f"Strategy: {strategy.upper()}"))
+    logs.append(("STEP 2: Formula", strategy_formulas.get(strategy, "N/A")))
+    logs.append(("STEP 2: Combined Score", f"P(Fake)_fused = {final:.4f}"))
+
+    logs.append(("STEP 3: Thresholds", f"Fake >= 0.55 | Real <= 0.45 | Uncertain = 0.45 to 0.55"))
+    logs.append(("STEP 3: Evaluation", f"{final:.4f} vs threshold 0.55"))
+    logs.append(("STEP 3: Image Weight", f"Contribution: {img_prob:.4f} ({img_prob/(img_prob+txt_prob)*100:.1f}%)"))
+    logs.append(("STEP 3: Text Weight", f"Contribution: {txt_prob:.4f} ({txt_prob/(img_prob+txt_prob)*100:.1f}%)"))
+
     if final >= 0.55:
         label, confidence = "Fake", final
     elif final <= 0.45:
         label, confidence = "Real", 1 - final
     else:
         label, confidence = "Uncertain", max(final, 1 - final)
+
+    logs.append(("STEP 4: Final Verdict", f"{label} with confidence {confidence:.1%}"))
 
     return {
         "final_prediction": label,
@@ -159,6 +251,7 @@ def combine_predictions(image_result, text_result, strategy="average"):
         "final_real_probability": 1 - final,
         "image_contribution": img_prob,
         "text_contribution": txt_prob,
+        "logs": logs,
     }
 
 
@@ -643,6 +736,11 @@ def main():
                 with st.expander("  Error Level Analysis Visualization"):
                     st.image(image_result["ela_image"], caption="ELA Difference Map", use_container_width=True)
 
+                with st.expander("  Image Computation Breakdown", expanded=False):
+                    for step_title, step_detail in image_result.get("logs", []):
+                        st.markdown(f"**{step_title}**")
+                        st.code(step_detail, language=None)
+
             col_idx += 1
 
         if has_text:
@@ -672,6 +770,11 @@ def main():
                 </div>
                 """, unsafe_allow_html=True)
 
+                with st.expander("  Text Computation Breakdown", expanded=False):
+                    for step_title, step_detail in text_result.get("logs", []):
+                        st.markdown(f"**{step_title}**")
+                        st.code(step_detail, language=None)
+
             col_idx += 1
 
         if image_result and text_result:
@@ -699,6 +802,11 @@ def main():
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
+
+                with st.expander("  Fusion Computation Breakdown", expanded=False):
+                    for step_title, step_detail in combined.get("logs", []):
+                        st.markdown(f"**{step_title}**")
+                        st.code(step_detail, language=None)
 
         # ── FUSION BREAKDOWN ──
         if image_result and text_result:
