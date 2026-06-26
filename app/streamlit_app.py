@@ -259,6 +259,7 @@ def init_session():
     defaults = {
         "history": [],
         "analysis_count": 0,
+        "current_results": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -689,32 +690,96 @@ def main():
             from transformers import DistilBertTokenizer
             tokenizer = DistilBertTokenizer.from_pretrained(config.text.model_name)
 
-        image_result = None
-        text_result = None
         has_image = uploaded_image is not None
         has_text = bool(text_input and text_input.strip())
 
-        # ── RESULTS ──
+        image_result = None
+        text_result = None
+        combined_result = None
+
+        if has_image:
+            with st.spinner("Running image forensics..."):
+                image_result = predict_image(image, image_model, device)
+
+        if has_text:
+            with st.spinner("Running text analysis..."):
+                text_result = predict_text(text_input, text_model, tokenizer, device)
+
+        if image_result and text_result:
+            combined_result = combine_predictions(image_result, text_result, fusion_strategy)
+
+            entry = {
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "verdict": combined_result["final_prediction"],
+                "image_prob": image_result["fake_probability"],
+                "text_prob": text_result["fake_probability"],
+                "final_prob": combined_result["final_fake_probability"],
+                "strategy": fusion_strategy,
+                "summary": f"Image: {image_result['prediction']} ({image_result['fake_probability']:.1%}) | Text: {text_result['prediction']} ({text_result['fake_probability']:.1%}) | Fused: {combined_result['final_prediction']} ({combined_result['final_fake_probability']:.1%})",
+                "text_preview": text_input[:80] if text_input else "(no text)",
+            }
+            save_to_history(entry)
+
+        elif image_result:
+            entry = {
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "verdict": image_result["prediction"],
+                "image_prob": image_result["fake_probability"],
+                "text_prob": None,
+                "final_prob": image_result["fake_probability"],
+                "strategy": "image-only",
+                "summary": f"Image: {image_result['prediction']} ({image_result['fake_probability']:.1%})",
+                "text_preview": "(no text)",
+            }
+            save_to_history(entry)
+
+        elif text_result:
+            entry = {
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "verdict": text_result["prediction"],
+                "image_prob": None,
+                "text_prob": text_result["fake_probability"],
+                "final_prob": text_result["fake_probability"],
+                "strategy": "text-only",
+                "summary": f"Text: {text_result['prediction']} ({text_result['fake_probability']:.1%})",
+                "text_preview": text_input[:80] if text_input else "(no text)",
+            }
+            save_to_history(entry)
+
+        st.session_state.current_results = {
+            "image_result": image_result,
+            "text_result": text_result,
+            "combined_result": combined_result,
+        }
+        st.rerun()
+
+    # ── DISPLAY RESULTS (persists across reruns) ──
+    results = st.session_state.current_results
+    if results:
+        image_result = results.get("image_result")
+        text_result = results.get("text_result")
+        combined_result = results.get("combined_result")
+
+        has_image = image_result is not None
+        has_text = text_result is not None
+        has_fused = combined_result is not None
+
         st.markdown('<div class="section-label">RESULTS</div>', unsafe_allow_html=True)
 
         if has_image and has_text:
             result_cols = st.columns(3)
-        elif has_image:
+        elif has_image or has_text:
             result_cols = st.columns(2)
         else:
-            result_cols = st.columns(2)
+            result_cols = st.columns(1)
 
         col_idx = 0
 
         if has_image:
             with result_cols[col_idx]:
-                with st.spinner("Running image forensics..."):
-                    image_result = predict_image(image, image_model, device)
-
                 verdict = image_result["prediction"]
                 fake_p = image_result["fake_probability"]
                 conf = image_result["confidence"]
-
                 card_class = {"Fake": "result-card-fake", "Real": "result-card-real", "Uncertain": "result-card-uncertain"}.get(verdict, "")
                 verdict_class = {"Fake": "verdict-fake", "Real": "verdict-real", "Uncertain": "verdict-uncertain"}.get(verdict, "")
 
@@ -733,7 +798,7 @@ def main():
                 </div>
                 """, unsafe_allow_html=True)
 
-                with st.expander("  Error Level Analysis Visualization"):
+                with st.expander("  Error Level Analysis Visualization", expanded=False):
                     st.image(image_result["ela_image"], caption="ELA Difference Map", use_container_width=True)
 
                 with st.expander("  Image Computation Breakdown", expanded=False):
@@ -745,13 +810,9 @@ def main():
 
         if has_text:
             with result_cols[col_idx]:
-                with st.spinner("Running text analysis..."):
-                    text_result = predict_text(text_input, text_model, tokenizer, device)
-
                 verdict = text_result["prediction"]
                 fake_p = text_result["fake_probability"]
                 conf = text_result["confidence"]
-
                 card_class = {"Fake": "result-card-fake", "Real": "result-card-real", "Uncertain": "result-card-uncertain"}.get(verdict, "")
                 verdict_class = {"Fake": "verdict-fake", "Real": "verdict-real", "Uncertain": "verdict-uncertain"}.get(verdict, "")
 
@@ -777,14 +838,11 @@ def main():
 
             col_idx += 1
 
-        if image_result and text_result:
-            combined = combine_predictions(image_result, text_result, fusion_strategy)
-
+        if has_fused:
             with result_cols[col_idx]:
-                verdict = combined["final_prediction"]
-                fake_p = combined["final_fake_probability"]
-                conf = combined["final_confidence"]
-
+                verdict = combined_result["final_prediction"]
+                fake_p = combined_result["final_fake_probability"]
+                conf = combined_result["final_confidence"]
                 card_class = {"Fake": "result-card-fake", "Real": "result-card-real", "Uncertain": "result-card-uncertain"}.get(verdict, "")
                 verdict_class = {"Fake": "verdict-fake", "Real": "verdict-real", "Uncertain": "verdict-uncertain"}.get(verdict, "")
 
@@ -798,18 +856,18 @@ def main():
                     </div>
                     <div style="display:flex; justify-content:space-between; font-size:0.7rem; color:rgba(255,255,255,0.4);">
                         <span>Fake: {fake_p:.1%}</span>
-                        <span>Real: {combined['final_real_probability']:.1%}</span>
+                        <span>Real: {combined_result['final_real_probability']:.1%}</span>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
 
                 with st.expander("  Fusion Computation Breakdown", expanded=False):
-                    for step_title, step_detail in combined.get("logs", []):
+                    for step_title, step_detail in combined_result.get("logs", []):
                         st.markdown(f"**{step_title}**")
                         st.code(step_detail, language=None)
 
         # ── FUSION BREAKDOWN ──
-        if image_result and text_result:
+        if has_fused:
             st.markdown('<div class="section-label">FUSION BREAKDOWN</div>', unsafe_allow_html=True)
 
             fb1, fb2, fb3, fb4 = st.columns(4)
@@ -820,55 +878,9 @@ def main():
             with fb3:
                 st.metric("Strategy", fusion_strategy.upper())
             with fb4:
-                st.metric("Final Score", f"{combined['final_fake_probability']:.1%}", help="Combined fake probability")
+                st.metric("Final Score", f"{combined_result['final_fake_probability']:.1%}", help="Combined fake probability")
 
-            st.progress(min(combined["final_fake_probability"], 1.0))
-
-            # ── SAVE TO HISTORY ──
-            img_summary = f"Image: {image_result['prediction']} ({image_result['fake_probability']:.1%})"
-            txt_summary = f"Text: {text_result['prediction']} ({text_result['fake_probability']:.1%})"
-            fuse_summary = f"Fused: {combined['final_prediction']} ({combined['final_fake_probability']:.1%})"
-
-            entry = {
-                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "verdict": combined["final_prediction"],
-                "image_prob": image_result["fake_probability"],
-                "text_prob": text_result["fake_probability"],
-                "final_prob": combined["final_fake_probability"],
-                "strategy": fusion_strategy,
-                "summary": f"{img_summary} | {txt_summary} | {fuse_summary}",
-                "text_preview": text_input[:80] if text_input else "(no text)",
-            }
-            save_to_history(entry)
-            st.rerun()
-
-        elif image_result:
-            entry = {
-                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "verdict": image_result["prediction"],
-                "image_prob": image_result["fake_probability"],
-                "text_prob": None,
-                "final_prob": image_result["fake_probability"],
-                "strategy": "image-only",
-                "summary": f"Image: {image_result['prediction']} ({image_result['fake_probability']:.1%})",
-                "text_preview": "(no text)",
-            }
-            save_to_history(entry)
-            st.rerun()
-
-        elif text_result:
-            entry = {
-                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "verdict": text_result["prediction"],
-                "image_prob": None,
-                "text_prob": text_result["fake_probability"],
-                "final_prob": text_result["fake_probability"],
-                "strategy": "text-only",
-                "summary": f"Text: {text_result['prediction']} ({text_result['fake_probability']:.1%})",
-                "text_preview": text_input[:80] if text_input else "(no text)",
-            }
-            save_to_history(entry)
-            st.rerun()
+            st.progress(min(combined_result["final_fake_probability"], 1.0))
 
     # ── ANALYSIS HISTORY (below results) ──
     if st.session_state.history:
